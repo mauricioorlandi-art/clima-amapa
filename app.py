@@ -142,22 +142,25 @@ CULTURAS = {
     "Milho": {"t_base": 10.0, "gdd_ciclo": 1500, "cor": "#ffd166"},
 }
 
-# Calendário agrícola — janelas (mês, dia). Aproximadas p/ Norte/cerrado amapaense.
+# Sistema de sucessão. Cada fase é (rótulo, dia_inicial, dia_final) em DIAS A PARTIR
+# do plantio da soja (dia 0 = início das chuvas, detectado por cidade). As durações
+# de ciclo são típicas; o que se adapta à cidade é a data-âncora (onset das chuvas).
 ANO_BASE = 2024
-CALENDARIO = {
+SISTEMA = {
     "Soja": {
         "cor": "#2dd4a7",
-        "fases": [("Plantio",(11,15),(1,15)), ("Ciclo",(11,15),(3,31)), ("Colheita",(3,1),(5,15))],
-    },
-    "Milho 1ª safra": {
-        "cor": "#ffd166",
-        "fases": [("Plantio",(10,1),(12,15)), ("Ciclo",(10,1),(2,28)), ("Colheita",(2,1),(4,15))],
+        "fases": [("Plantio", 0, 35), ("Ciclo", 0, 118), ("Colheita", 108, 135)],
     },
     "Milho safrinha": {
-        "cor": "#fb923c",
-        "fases": [("Plantio",(1,15),(3,15)), ("Ciclo",(1,15),(6,15)), ("Colheita",(5,15),(7,31))],
+        "cor": "#ffd166",
+        "fases": [("Plantio", 128, 158), ("Ciclo", 128, 260), ("Colheita", 250, 282)],
+    },
+    "Brachiaria ruziziensis": {
+        "cor": "#b5cc6a",
+        "fases": [("Consórcio com o milho", 128, 282), ("Palhada / pasto", 282, 352)],
     },
 }
+ORDEM_ATIVIDADES = [f"{c} · {f[0]}" for c, info in SISTEMA.items() for f in info["fases"]]
 
 LAYOUT_BASE = dict(
     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -301,6 +304,65 @@ def fase_para_segmentos(mes_ini, dia_ini, mes_fim, dia_fim):
     return [(ini, date(ANO_BASE, 12, 31)), (date(ANO_BASE, 1, 1), fim)]
 
 
+def doy_para_data(doy):
+    """Dia do ano (cíclico) → Timestamp dentro do ANO_BASE."""
+    doy = ((int(doy) - 1) % 365) + 1
+    return pd.Timestamp(date(ANO_BASE, 1, 1)) + pd.Timedelta(days=doy - 1)
+
+
+def fase_doy_segmentos(onset_doy, ini_off, fim_off):
+    """Converte uma fase definida em dias a partir do plantio (onset) em segmentos
+    de data no calendário anual, dividindo na virada do ano quando necessário."""
+    ini, fim = onset_doy + ini_off, onset_doy + fim_off
+    if (ini - 1) // 365 == (fim - 1) // 365:
+        return [(doy_para_data(ini), doy_para_data(fim) + pd.Timedelta(days=1))]
+    return [
+        (doy_para_data(ini), pd.Timestamp(date(ANO_BASE, 12, 31)) + pd.Timedelta(days=1)),
+        (pd.Timestamp(date(ANO_BASE, 1, 1)), doy_para_data(fim) + pd.Timedelta(days=1)),
+    ]
+
+
+def maior_periodo_umido(umido):
+    """Maior sequência cíclica de meses úmidos. Retorna (n_meses, ini_idx, fim_idx, regime)."""
+    n = 12
+    if all(umido):
+        return (12, None, None, "umido")
+    if not any(umido):
+        return (0, None, None, "seco")
+    melhor = (0, 0, 0)
+    for start in range(n):
+        if umido[start] and not umido[(start - 1) % n]:
+            length, m = 0, start
+            while umido[m % n] and length < n:
+                length += 1; m += 1
+            if length > melhor[0]:
+                melhor = (length, start, (start + length - 1) % n)
+    return (melhor[0], melhor[1], melhor[2], "sazonal")
+
+
+def trimestre_mais_chuvoso(precip_mes):
+    """Mês inicial do trimestre (janela móvel de 3 meses) com maior chuva."""
+    melhor = (-1, 1)
+    for m in range(1, 13):
+        soma = sum((precip_mes.get(((m - 1 + k) % 12) + 1) or 0) for k in range(3))
+        if soma > melhor[0]:
+            melhor = (soma, m)
+    return melhor[1]
+
+
+def detectar_estacao(precip_mes, limiar):
+    """Detecta início/fim da estação chuvosa a partir da climatologia mensal de chuva."""
+    umido = [bool((precip_mes.get(m) or 0) >= limiar) for m in range(1, 13)]
+    length, si, ei, regime = maior_periodo_umido(umido)
+    if regime == "umido":
+        onset = trimestre_mais_chuvoso(precip_mes)
+        return {"onset": onset, "fim": ((onset + 10) % 12) + 1, "length": 12, "regime": "umido"}
+    if regime == "seco":
+        onset = max(range(1, 13), key=lambda m: (precip_mes.get(m) or 0))
+        return {"onset": onset, "fim": onset, "length": 1, "regime": "seco"}
+    return {"onset": si + 1, "fim": ei + 1, "length": length, "regime": "sazonal"}
+
+
 def cartao_kpi(col, label, valor, unidade, cor):
     col.markdown(f"""
     <div class="kpi" style="border-top-color:{cor};">
@@ -341,6 +403,10 @@ with st.sidebar:
     st.markdown("---")
     st.markdown('<div class="side-label">Painel agronômico</div>', unsafe_allow_html=True)
     cultura_ref = st.selectbox("Cultura de referência (GDD)", list(CULTURAS.keys()))
+    st.markdown('<div class="side-label" style="margin-top:10px;">Calendário agrícola</div>', unsafe_allow_html=True)
+    limiar_chuva = st.slider("Mês chuvoso a partir de (mm)", 50, 200, 100, 10,
+                             help="Limiar para o app considerar um mês dentro da estação chuvosa "
+                                  "e ancorar o plantio. Detectado a partir da chuva da cidade selecionada.")
     st.markdown('<div class="side-label" style="margin-top:10px;">Previsão</div>', unsafe_allow_html=True)
     dias_previsao = st.select_slider("Horizonte (dias)", options=[7,10,14,16], value=14)
     st.markdown("---")
@@ -607,39 +673,77 @@ with tab_prev:
 
 # ════════════════════════════════════════════════════════════ CALENDÁRIO AGRÍCOLA ═
 with tab_cal:
-    st.markdown('<div class="section-title">Soja e milho — plantio, ciclo e colheita</div>',
-                unsafe_allow_html=True)
+    st.markdown(f'<div class="section-title">Sucessão soja → milho safrinha + braquiária · '
+                f'ajustado à chuva de {cidade}</div>', unsafe_allow_html=True)
+
+    # Climatologia mensal de chuva da cidade (média do total mensal entre os anos do período)
+    mensal = df["precipitation"].resample("ME").sum()
+    precip_mes = mensal.groupby(mensal.index.month).mean().reindex(range(1, 13))
+    meses_com_dado = int(precip_mes.notna().sum())
+
+    est = detectar_estacao(precip_mes, limiar_chuva)
+    onset_mes, fim_mes, regime = est["onset"], est["fim"], est["regime"]
+    onset_doy = date(ANO_BASE, onset_mes, 1).timetuple().tm_yday
+
+    def mes_do_offset(off):
+        return MESES_PT[doy_para_data(onset_doy + off).month]
+
+    # Monta as fases do sistema ancoradas no início das chuvas detectado
     linhas = []
-    for cultura, info in CALENDARIO.items():
-        for nome_fase, (mi, di), (mf, dia_f) in info["fases"]:
-            for ini, fim in fase_para_segmentos(mi, di, mf, dia_f):
-                linhas.append({"Atividade": f"{cultura} · {nome_fase}", "Fase": nome_fase,
-                               "Início": pd.Timestamp(ini), "Fim": pd.Timestamp(fim) + pd.Timedelta(days=1)})
+    for comp, info in SISTEMA.items():
+        for nome_fase, ini_off, fim_off in info["fases"]:
+            for ini, fim in fase_doy_segmentos(onset_doy, ini_off, fim_off):
+                linhas.append({"Atividade": f"{comp} · {nome_fase}", "Componente": comp,
+                               "Início": ini, "Fim": fim})
     df_cal = pd.DataFrame(linhas)
 
-    cor_fase = {"Plantio":"#00e5ff", "Ciclo":"#a78bfa", "Colheita":"#ffd166"}
-    fig_cal = px.timeline(df_cal, x_start="Início", x_end="Fim", y="Atividade", color="Fase",
-        color_discrete_map=cor_fase, category_orders={"Fase":["Plantio","Ciclo","Colheita"]})
+    cores_comp = {c: info["cor"] for c, info in SISTEMA.items()}
+    fig_cal = px.timeline(df_cal, x_start="Início", x_end="Fim", y="Atividade", color="Componente",
+        color_discrete_map=cores_comp, category_orders={"Atividade": ORDEM_ATIVIDADES})
     fig_cal.update_yaxes(autorange="reversed", title=None, gridcolor="#16305a")
     fig_cal.update_xaxes(gridcolor="#16305a",
-        range=[pd.Timestamp(ANO_BASE,1,1), pd.Timestamp(ANO_BASE,12,31)],
-        tickvals=[pd.Timestamp(ANO_BASE,m,1) for m in range(1,13)],
-        ticktext=[MESES_PT[m] for m in range(1,13)])
+        range=[pd.Timestamp(ANO_BASE, 1, 1), pd.Timestamp(ANO_BASE, 12, 31)],
+        tickvals=[pd.Timestamp(ANO_BASE, m, 1) for m in range(1, 13)],
+        ticktext=[MESES_PT[m] for m in range(1, 13)])
+
+    # Faixa sombreada = estação chuvosa detectada
+    for ini_s, fim_s in fase_para_segmentos(onset_mes, 1, fim_mes, 28):
+        fig_cal.add_vrect(x0=pd.Timestamp(ini_s), x1=pd.Timestamp(fim_s) + pd.Timedelta(days=1),
+            fillcolor="rgba(0,229,255,0.06)", line_width=0, layer="below")
+
     hoje_base = pd.Timestamp(ANO_BASE, date.today().month, date.today().day)
     fig_cal.add_vline(x=hoje_base, line_color="#2dd4a7", line_width=2,
         annotation_text="hoje", annotation_font_color="#2dd4a7")
     fig_cal.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(color="#e8f4fd", family="DM Sans", size=12), height=420,
-        margin=dict(l=10,r=10,t=34,b=10), legend=_LEGEND, title=_TITLE("Janelas anuais (eixo = meses)"))
+        font=dict(color="#e8f4fd", family="DM Sans", size=12), height=440,
+        margin=dict(l=10, r=10, t=34, b=10), legend=_LEGEND,
+        title=_TITLE("Faixa azul = estação chuvosa detectada · plantio ancorado no início das chuvas"))
     st.plotly_chart(fig_cal, width="stretch")
 
+    # Parâmetros detectados (KPIs)
+    dur_dias = est["length"] * 30
+    kpis_cal = [
+        ("Início das chuvas", MESES_PT[onset_mes], "plantio da soja", "#00e5ff"),
+        ("Fim das chuvas",    MESES_PT[fim_mes],   "fim do período úmido", "#a78bfa"),
+        ("Estação chuvosa",   f"{est['length']}",  "meses úmidos", "#2dd4a7"),
+        ("Colheita da soja",  mes_do_offset(120),  "≈ 118 dias após plantio", "#2dd4a7"),
+        ("Colheita do milho", mes_do_offset(270),  "safrinha consorciada", "#ffd166"),
+    ]
+    for col, (lb, vl, un, cor) in zip(st.columns(5), kpis_cal):
+        cartao_kpi(col, lb, vl, un, cor)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # Cartões do sistema (datas derivadas)
     resumo = {
-        "Soja": ("#2dd4a7", "Plantio de nov a jan, ciclo de ~120 dias, colheita de mar a mai. "
-                            "Plante no início das chuvas e busque colher antes do fim do período úmido."),
-        "Milho 1ª safra": ("#ffd166", "Plantio de out a dez, colheita de fev a abr. "
-                                       "Acompanha o início das águas; a floração não pode pegar veranico."),
-        "Milho safrinha": ("#fb923c", "Plantio de jan a mar (após a soja), colheita de mai a jul. "
-                                       "Maior risco hídrico no fim do ciclo — acompanhe o balanço hídrico."),
+        "Soja": ("#2dd4a7", f"Plantio no início das chuvas ({MESES_PT[onset_mes]}), ciclo de "
+                            f"~118 dias, colheita por volta de {mes_do_offset(120)}. É a cultura que "
+                            f"abre o sistema e paga a safra."),
+        "Milho safrinha": ("#ffd166", f"Semeado logo após a soja (~{mes_do_offset(135)}) em consórcio "
+                            f"com a braquiária; colheita do grão em torno de {mes_do_offset(270)}. "
+                            f"Aproveita o fim das chuvas."),
+        "Brachiaria ruziziensis": ("#b5cc6a", "Semeada junto com o milho, cresce à sombra dele e "
+                            "assume após a colheita, formando palhada para plantio direto e pasto na "
+                            "seca (integração lavoura-pecuária)."),
     }
     for col, (cult, (cor, txt)) in zip(st.columns(3), resumo.items()):
         col.markdown(f"""
@@ -648,10 +752,49 @@ with tab_cal:
           <div class="crop-body">{txt}</div>
         </div>""", unsafe_allow_html=True)
 
-    st.markdown('<div class="note" style="margin-top:12px;">Janelas aproximadas para a região '
-                'Norte/cerrado amapaense. Antes de definir a data de plantio, confira o ZARC '
-                '(Zoneamento Agrícola de Risco Climático) do município, que indica os períodos de '
-                'menor risco por tipo de solo e cultivar.</div>', unsafe_allow_html=True)
+    # Alertas adaptativos derivados do regime de chuva
+    st.markdown('<div class="section-title" style="margin-top:18px;">Leitura do regime</div>',
+                unsafe_allow_html=True)
+    av = []
+    if meses_com_dado < 12:
+        av.append(("#fb923c", "Período curto para climatologia",
+            f"O período selecionado cobre {meses_com_dado} de 12 meses. Para um calendário "
+            f"confiável, selecione pelo menos 1–2 anos completos na barra lateral."))
+    if regime == "umido":
+        av.append(("#00e5ff", "Chuva o ano todo",
+            "Todos os meses superam o limiar — janela de plantio flexível. O cuidado migra para "
+            "doenças e para a colheita em período úmido; priorize cultivares resistentes."))
+    elif regime == "seco":
+        av.append(("#ff6b6b", "Chuva insuficiente para sequeiro",
+            f"Nenhum mês atinge {limiar_chuva} mm com o limiar atual. O sistema em sequeiro é "
+            f"arriscado nesta cidade — considere irrigação ou reduza o limiar para inspecionar."))
+    else:
+        if dur_dias >= 240:
+            av.append(("#2dd4a7", "Janela favorável ao sistema completo",
+                f"A estação chuvosa dura ~{est['length']} meses, suficiente para soja + milho "
+                f"safrinha consorciado com braquiária com risco hídrico baixo."))
+        elif dur_dias >= 150:
+            av.append(("#fb923c", "Milho safrinha com risco no enchimento",
+                f"A estação dura ~{est['length']} meses: o enchimento de grão do milho pode pegar o "
+                f"fim das chuvas. A braquiária ajuda a segurar umidade e cobertura — favoreça "
+                f"cultivares precoces e antecipe o plantio da soja."))
+        else:
+            av.append(("#ff6b6b", "Estação chuvosa curta",
+                f"Com ~{est['length']} meses úmidos, sobra pouca janela após a soja. O milho "
+                f"safrinha fica arriscado; a braquiária solo ainda funciona como cobertura/pasto."))
+    for cor, titulo, texto in av:
+        st.markdown(f"""
+        <div class="alert" style="border-left-color:{cor};">
+          <div class="alert-head"><span class="alert-dot" style="background:{cor};"></span>
+          <span class="alert-title" style="color:{cor};">{titulo}</span></div>
+          <div class="alert-text">{texto}</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown('<div class="note" style="margin-top:12px;">O início das chuvas é detectado pela '
+                'climatologia de precipitação da cidade selecionada (ajuste o limiar na barra '
+                'lateral). As durações de ciclo são típicas; confirme as datas no ZARC do município '
+                'antes de plantar.</div>', unsafe_allow_html=True)
+
 
 # ═══════════════════════════════════════════════════════════════ PAINEL AGRONÔMICO ═
 with tab_agro:
