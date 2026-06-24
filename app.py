@@ -155,10 +155,6 @@ SISTEMA = {
         "cor": "#ffd166",
         "fases": [("Plantio", 128, 158), ("Ciclo", 128, 260), ("Colheita", 250, 282)],
     },
-    "Brachiaria ruziziensis": {
-        "cor": "#b5cc6a",
-        "fases": [("Consórcio com o milho", 128, 282), ("Palhada / pasto", 282, 352)],
-    },
 }
 ORDEM_ATIVIDADES = [f"{c} · {f[0]}" for c, info in SISTEMA.items() for f in info["fases"]]
 
@@ -673,7 +669,7 @@ with tab_prev:
 
 # ════════════════════════════════════════════════════════════ CALENDÁRIO AGRÍCOLA ═
 with tab_cal:
-    st.markdown(f'<div class="section-title">Sucessão soja → milho safrinha + braquiária · '
+    st.markdown(f'<div class="section-title">Sucessão soja → milho safrinha · '
                 f'ajustado à chuva de {cidade}</div>', unsafe_allow_html=True)
 
     # Climatologia mensal de chuva da cidade (média do total mensal entre os anos do período)
@@ -727,7 +723,7 @@ with tab_cal:
         ("Fim das chuvas",    MESES_PT[fim_mes],   "fim do período úmido", "#a78bfa"),
         ("Estação chuvosa",   f"{est['length']}",  "meses úmidos", "#2dd4a7"),
         ("Colheita da soja",  mes_do_offset(120),  "≈ 118 dias após plantio", "#2dd4a7"),
-        ("Colheita do milho", mes_do_offset(270),  "safrinha consorciada", "#ffd166"),
+        ("Colheita do milho", mes_do_offset(270),  "milho safrinha", "#ffd166"),
     ]
     for col, (lb, vl, un, cor) in zip(st.columns(5), kpis_cal):
         cartao_kpi(col, lb, vl, un, cor)
@@ -738,14 +734,11 @@ with tab_cal:
         "Soja": ("#2dd4a7", f"Plantio no início das chuvas ({MESES_PT[onset_mes]}), ciclo de "
                             f"~118 dias, colheita por volta de {mes_do_offset(120)}. É a cultura que "
                             f"abre o sistema e paga a safra."),
-        "Milho safrinha": ("#ffd166", f"Semeado logo após a soja (~{mes_do_offset(135)}) em consórcio "
-                            f"com a braquiária; colheita do grão em torno de {mes_do_offset(270)}. "
-                            f"Aproveita o fim das chuvas."),
-        "Brachiaria ruziziensis": ("#b5cc6a", "Semeada junto com o milho, cresce à sombra dele e "
-                            "assume após a colheita, formando palhada para plantio direto e pasto na "
-                            "seca (integração lavoura-pecuária)."),
+        "Milho safrinha": ("#ffd166", f"Semeado logo após a colheita da soja (~{mes_do_offset(135)}); "
+                            f"colheita do grão em torno de {mes_do_offset(270)}. Aproveita o fim das "
+                            f"chuvas, então quanto mais cedo entrar, menor o risco hídrico."),
     }
-    for col, (cult, (cor, txt)) in zip(st.columns(3), resumo.items()):
+    for col, (cult, (cor, txt)) in zip(st.columns(2), resumo.items()):
         col.markdown(f"""
         <div class="crop-card">
           <div class="crop-head"><span class="crop-dot" style="background:{cor};"></span>{cult}</div>
@@ -772,16 +765,16 @@ with tab_cal:
         if dur_dias >= 240:
             av.append(("#2dd4a7", "Janela favorável ao sistema completo",
                 f"A estação chuvosa dura ~{est['length']} meses, suficiente para soja + milho "
-                f"safrinha consorciado com braquiária com risco hídrico baixo."))
+                f"safrinha com risco hídrico baixo."))
         elif dur_dias >= 150:
             av.append(("#fb923c", "Milho safrinha com risco no enchimento",
                 f"A estação dura ~{est['length']} meses: o enchimento de grão do milho pode pegar o "
-                f"fim das chuvas. A braquiária ajuda a segurar umidade e cobertura — favoreça "
-                f"cultivares precoces e antecipe o plantio da soja."))
+                f"fim das chuvas. Favoreça cultivares precoces e antecipe ao máximo o plantio da soja "
+                f"para liberar a área mais cedo."))
         else:
             av.append(("#ff6b6b", "Estação chuvosa curta",
                 f"Com ~{est['length']} meses úmidos, sobra pouca janela após a soja. O milho "
-                f"safrinha fica arriscado; a braquiária solo ainda funciona como cobertura/pasto."))
+                f"safrinha fica arriscado — avalie ficar só com a soja ou irrigar a segunda safra."))
     for cor, titulo, texto in av:
         st.markdown(f"""
         <div class="alert" style="border-left-color:{cor};">
