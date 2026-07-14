@@ -1091,8 +1091,8 @@ with tab_hist:
     st.markdown('<div class="titulo-secao">Climatologia mensal — período completo</div>', unsafe_allow_html=True)
     dados_mensais = dados.copy(); dados_mensais["mes"] = dados_mensais.index.month
     climatologia = dados_mensais.groupby("mes").agg(
-        temp_max=("temp_maxima","mean"), temp_min=("temp_minima","mean"),
-        temp_mean=("temp_media","mean"), precipitation=("chuva","sum"),
+        temp_maxima=("temp_maxima","mean"), temp_minima=("temp_minima","mean"),
+        temp_media=("temp_media","mean"), chuva=("chuva","sum"),
     ).reset_index()
     climatologia["nome_mes"] = climatologia["mes"].map(MESES_PT)
     grafico_climatologia = go.Figure()
