@@ -540,38 +540,36 @@ def mostrar_modelo_csv():
     })
     st.dataframe(exemplo, width="stretch", hide_index=True)
 
-    col_a, col_b = st.columns([1.15, 1])
-    with col_a:
-        st.markdown('<div class="section-title" style="margin-top:6px;">Como o arquivo deve ficar por dentro</div>',
-                    unsafe_allow_html=True)
-        st.code("data,temp_max,temp_min,precipitation,wind,humidity,et0\n"
-                "01/07/2026,32.1,23.0,0.0,9,78,4.6\n"
-                "02/07/2026,31.5,22.6,12.4,14,88,3.1\n"
-                "03/07/2026,33.0,23.4,3.2,7,74,4.9", language="text")
-    with col_b:
-        st.markdown('<div class="section-title" style="margin-top:6px;">Regras das colunas</div>',
-                    unsafe_allow_html=True)
-        regras = pd.DataFrame({
-            "Coluna": ["data", "temp_max", "temp_min", "precipitation", "wind", "humidity", "et0"],
-            "Unidade": ["dd/mm/aaaa", "°C", "°C", "mm", "km/h", "%", "mm"],
-            "Obrigatória": ["Sim", "Sim", "Sim", "Sim", "Não", "Não", "Não"],
-            "Também aceita": ["date, dia", "tmax", "tmin", "chuva, precip",
-                              "vento", "umidade, ur", "eto"],
-        })
-        st.dataframe(regras, width="stretch", hide_index=True)
+    st.markdown('<div class="section-title" style="margin-top:14px;">Regras das colunas</div>',
+                unsafe_allow_html=True)
+    regras = pd.DataFrame({
+        "Coluna": ["data", "temp_max", "temp_min", "precipitation", "wind", "humidity", "et0"],
+        "O que é": ["Dia da medição", "Temperatura máxima", "Temperatura mínima",
+                    "Chuva do dia", "Velocidade do vento", "Umidade relativa",
+                    "Evapotranspiração"],
+        "Unidade": ["dd/mm/aaaa", "°C", "°C", "mm", "km/h", "%", "mm"],
+        "Obrigatória": ["Sim", "Sim", "Sim", "Sim", "Não", "Não", "Não"],
+        "Também aceita": ["date, dia", "tmax", "tmin", "chuva, precip",
+                          "vento", "umidade, ur", "eto"],
+    })
+    st.dataframe(regras, width="stretch", hide_index=True)
 
     st.markdown("""
     <div class="alert" style="border-left-color:#00e5ff;">
       <div class="alert-head"><span class="alert-dot" style="background:#00e5ff;"></span>
       <span class="alert-title" style="color:#00e5ff;">Pontos de atenção</span></div>
       <div class="alert-text">
-        Use <b>ponto</b> como separador decimal (32.1, não 32,1) e <b>vírgula</b> para separar as colunas.<br>
-        A data pode vir como 01/07/2026 ou 2026-07-01 — as duas funcionam.<br>
+        Cada linha é um dia; a primeira linha da planilha deve ter os nomes das colunas.<br>
+        Use <b>ponto</b> como separador decimal (32.1, não 32,1).<br>
+        A data pode ser 01/07/2026 ou 2026-07-01 — as duas funcionam.<br>
         Dias sem chuva devem ter <b>0</b>, não célula vazia.<br>
         No Excel, salve com <b>Salvar como → CSV UTF-8 (delimitado por vírgula)</b>.
       </div>
     </div>""", unsafe_allow_html=True)
 
+    st.markdown('<div class="note" style="margin-bottom:8px;">Dica: baixe o modelo abaixo, abra no '
+                'Excel, substitua pelos seus dados e salve. É o caminho mais seguro.</div>',
+                unsafe_allow_html=True)
     st.download_button("Baixar este modelo em CSV", data=csv_modelo(),
                        file_name="modelo_clima.csv", mime="text/csv")
 
@@ -1097,8 +1095,7 @@ with tab_hist:
         df_exibir.columns = ["Temp. máx. (°C)","Temp. mín. (°C)","Temp. média (°C)",
             "Precipitação (mm)","Vento máx. (km/h)","Umidade média (%)","ET0 (mm)"][:len(df_exibir.columns)]
         fmt = {c:"{:.2f}" for c in df_exibir.columns}
-        st.dataframe(df_exibir.style.format(fmt).background_gradient(cmap="Blues",
-            subset=["Precipitação (mm)"]), width="stretch")
+        st.dataframe(df_exibir.style.format(fmt), width="stretch")
 
 # ═════════════════════════════════════════════════════════════════════ PREVISÃO ═
 with tab_prev:
