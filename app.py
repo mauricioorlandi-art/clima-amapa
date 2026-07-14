@@ -1,9 +1,12 @@
 import streamlit as st
 import requests
+import os
+import math
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 # ── Configuração da página ──────────────────────────────────────────────────────
 st.set_page_config(
@@ -171,6 +174,133 @@ _YAXIS2 = dict(overlaying="y", side="right", showgrid=False,
                gridcolor="rgba(0,0,0,0)", color="#e8f4fd")
 _TITLE  = lambda t: dict(text=t, font=dict(color="#7ba3c8", size=12.5))
 
+# Delta T — faixas do Bureau of Meteorology (Austrália) / GRDC. Ideal 2–8 °C.
+DT_IDEAL = (2.0, 8.0)
+DT_MARGINAL = (0.0, 10.0)
+
+# Lua — mês sinódico e nova de referência (época padrão, UTC)
+SINODICO = 29.530588853
+NOVA_REF = datetime(2000, 1, 6, 18, 14, tzinfo=timezone.utc)
+FASES_LUA = {
+    "Nova":      {"cor": "#7ba3c8"},
+    "Crescente": {"cor": "#2dd4a7"},
+    "Cheia":     {"cor": "#ffd166"},
+    "Minguante": {"cor": "#fb923c"},
+}
+# Recomendações da tradição agrícola brasileira (empírica — sem comprovação científica)
+LUA_MANEJO = {
+    "Nova":      "Preparo do solo, adubação e controle de pragas. Semeadura fraca; alguns "
+                 "produtores aproveitam para raízes.",
+    "Crescente": "Fase indicada para o que cresce acima do solo — grãos como soja e milho, "
+                 "folhas e frutos. É a janela preferida da tradição para semear grãos.",
+    "Cheia":     "Melhor período para a colheita (grãos e frutos mais 'cheios'). Evita-se "
+                 "semear e podar.",
+    "Minguante": "Raízes e tubérculos, podas e preparo. Menos indicada para plantio de grãos.",
+}
+LUA_GRAOS = {"Crescente": "favorável", "Nova": "aceitável", "Cheia": "colheita", "Minguante": "desfavorável"}
+
+# ENOS (El Niño-Oscilação Sul) — efeito no Norte/Amapá (CPTEC-INPE, INMET, NOAA)
+ENOS_INFO = {
+    "Neutro": {"cor": "#7ba3c8", "titulo": "ENOS neutro",
+        "texto": "Sem El Niño nem La Niña ativos: espere o padrão climatológico normal da "
+                 "região. Siga a janela de plantio detectada pela chuva histórica."},
+    "El Niño": {"cor": "#ff6b6b", "titulo": "El Niño ativo",
+        "texto": "No Norte (Roraima, Amapá, norte do PA/AM) o El Niño tende a REDUZIR a chuva e "
+                 "intensificar a estação seca, deslocando a ZCIT. Risco maior para sequeiro: "
+                 "considere cultivares precoces, atenção à irrigação e não atrase o plantio da soja."},
+    "La Niña": {"cor": "#2dd4a7", "titulo": "La Niña ativa",
+        "texto": "No Norte a La Niña tende a AUMENTAR a chuva (acima da média). Bom para o "
+                 "enchimento hídrico, mas atenção ao excesso: risco de encharcamento, doenças e "
+                 "de colher em período úmido. Priorize drenagem e cultivares resistentes."},
+}
+
+
+def temp_bulbo_umido(T, RH):
+    """Temperatura de bulbo úmido (°C) por Stull (2011), a partir de T (°C) e UR (%)."""
+    RH = np.clip(np.asarray(RH, dtype=float), 1, 100)
+    T = np.asarray(T, dtype=float)
+    return (T * np.arctan(0.151977 * np.sqrt(RH + 8.313659))
+            + np.arctan(T + RH) - np.arctan(RH - 1.676331)
+            + 0.00391838 * (RH ** 1.5) * np.arctan(0.023101 * RH) - 4.686035)
+
+
+def classe_delta_t(dt):
+    """Classifica o Delta T para pulverização."""
+    if dt < DT_MARGINAL[0] or dt > DT_MARGINAL[1]:
+        return ("Inadequado", "#ff6b6b")
+    if dt < DT_IDEAL[0] or dt > DT_IDEAL[1]:
+        return ("Marginal", "#fb923c")
+    return ("Ideal", "#2dd4a7")
+
+
+def janelas_pulverizacao(fc_h):
+    """Blocos horários bons para pulverizar: Delta T ideal, vento 3–15 km/h e sem chuva."""
+    bom = (fc_h["dt"].between(*DT_IDEAL) & fc_h["wind"].between(3, 15) & (fc_h["precip"] < 0.1))
+    janelas, ini, prev = [], None, None
+    for t, ok in bom.items():
+        if ok and ini is None:
+            ini = t
+        if (not ok) and ini is not None:
+            janelas.append((ini, prev)); ini = None
+        prev = t
+    if ini is not None:
+        janelas.append((ini, prev))
+    return janelas
+
+
+def idade_lunar(dt=None):
+    """Idade da lua em dias (0 = lua nova)."""
+    dt = dt or datetime.now(timezone.utc)
+    return ((dt - NOVA_REF).total_seconds() / 86400.0) % SINODICO
+
+
+def fase_lunar(idade):
+    """Retorna (nome_da_fase, fração_iluminada 0-1, fração_do_ciclo 0-1)."""
+    frac = idade / SINODICO
+    illum = (1 - math.cos(2 * math.pi * frac)) / 2
+    if frac < 0.125 or frac >= 0.875:
+        nome = "Nova"
+    elif frac < 0.375:
+        nome = "Crescente"
+    elif frac < 0.625:
+        nome = "Cheia"
+    else:
+        nome = "Minguante"
+    return nome, illum, frac
+
+
+def proxima_fase_principal(alvo_frac, a_partir=None):
+    """Próxima data (UTC) em que o ciclo lunar atinge a fração alvo (0=nova,0.25=q.crescente,
+    0.5=cheia,0.75=q.minguante)."""
+    a_partir = a_partir or datetime.now(timezone.utc)
+    frac = idade_lunar(a_partir) / SINODICO
+    d = (alvo_frac - frac) % 1.0
+    return a_partir + timedelta(days=d * SINODICO)
+
+
+def desenhar_lua_svg(illum, frac, tam=88):
+    """Desenha a lua com a porção iluminada correta (crescente à direita, minguante à esquerda)."""
+    r = tam / 2 - 4
+    cx = cy = tam / 2
+    disco = f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="#14284c" stroke="#1e3a64" stroke-width="1.5"/>'
+    if illum <= 0.02:
+        luz = ""
+    elif illum >= 0.98:
+        luz = f'<circle cx="{cx}" cy="{cy}" r="{r}" fill="#ffd166"/>'
+    else:
+        crescendo = frac < 0.5                 # antes da cheia ilumina pela direita
+        rx = abs(r * (1 - 2 * illum))          # raio horizontal do terminador
+        sweep_out = 1 if crescendo else 0      # semicírculo externo no lado iluminado
+        if crescendo:
+            sweep_in = 0 if illum < 0.5 else 1
+        else:
+            sweep_in = 1 if illum < 0.5 else 0
+        path = (f'M {cx} {cy - r} A {r} {r} 0 0 {sweep_out} {cx} {cy + r} '
+                f'A {rx} {r} 0 0 {sweep_in} {cx} {cy - r} Z')
+        luz = f'<path d="{path}" fill="#ffd166"/>'
+    return (f'<svg width="{tam}" height="{tam}" viewBox="0 0 {tam} {tam}" '
+            f'xmlns="http://www.w3.org/2000/svg">{disco}{luz}</svg>')
+
 
 # ── Ícones de tempo (SVG de traço) ──────────────────────────────────────────────
 def icone_tempo(grupo):
@@ -200,9 +330,8 @@ def icone_tempo(grupo):
 
 
 # ── API ────────────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=3600, show_spinner=False)
-def buscar_clima(lat, lon, inicio, fim):
-    """Histórico diário (Open-Meteo Archive). Inclui ET0 para o balanço hídrico."""
+def _clima_archive(lat, lon, inicio, fim):
+    """Histórico diário do Open-Meteo Archive (ERA5). Tem atraso de ~5 dias."""
     url = "https://archive-api.open-meteo.com/v1/archive"
     params = {
         "latitude": lat, "longitude": lon,
@@ -226,6 +355,67 @@ def buscar_clima(lat, lon, inicio, fim):
     df["humidity"] = (df["relative_humidity_2m_max"] + df["relative_humidity_2m_min"]) / 2
     df = df.drop(columns=["relative_humidity_2m_max", "relative_humidity_2m_min"])
     return df
+
+
+def _clima_recente(lat, lon, past_days):
+    """Dias recentes até hoje via Open-Meteo Forecast (past_days), no mesmo esquema."""
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat, "longitude": lon,
+        "daily": ("temperature_2m_max,temperature_2m_min,precipitation_sum,"
+                  "windspeed_10m_max,et0_fao_evapotranspiration"),
+        "hourly": "relative_humidity_2m",
+        "timezone": "America/Belem",
+        "past_days": int(past_days), "forecast_days": 1,
+    }
+    r = requests.get(url, params=params, timeout=30)
+    r.raise_for_status()
+    j = r.json()
+    df = pd.DataFrame(j["daily"])
+    df["time"] = pd.to_datetime(df["time"])
+    df.set_index("time", inplace=True)
+    df = df.rename(columns={
+        "temperature_2m_max":"temp_max", "temperature_2m_min":"temp_min",
+        "precipitation_sum":"precipitation", "windspeed_10m_max":"wind",
+        "et0_fao_evapotranspiration":"et0",
+    })
+    df["temp_mean"] = (df["temp_max"] + df["temp_min"]) / 2
+    h = pd.DataFrame(j["hourly"])
+    h["time"] = pd.to_datetime(h["time"])
+    h.set_index("time", inplace=True)
+    df["humidity"] = h["relative_humidity_2m"].resample("D").mean().reindex(df.index)
+    hoje = pd.Timestamp(date.today())
+    return df[df.index <= hoje]
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def buscar_clima(lat, lon, inicio, fim):
+    """Histórico até hoje: Archive (ERA5) para o grosso + Forecast/past_days para os
+    últimos dias, já que o Archive tem atraso de ~5 dias."""
+    hoje = date.today()
+    fim = min(fim, hoje)
+    arch_fim = min(fim, hoje - timedelta(days=5))
+    arch = rec = None
+    if inicio <= arch_fim:
+        try:
+            arch = _clima_archive(lat, lon, inicio, arch_fim)
+        except Exception:
+            arch = None
+    if fim > hoje - timedelta(days=6):
+        past_days = max(7, min(92, (hoje - inicio).days + 1))
+        try:
+            rec = _clima_recente(lat, lon, past_days)
+        except Exception:
+            rec = None
+    if arch is None and rec is None:
+        # último recurso: tenta o Archive no intervalo inteiro
+        return _clima_archive(lat, lon, inicio, fim)
+    if arch is not None and rec is not None:
+        df = arch.combine_first(rec)       # Archive tem prioridade; recente preenche o rabo
+    else:
+        df = arch if arch is not None else rec
+    ini_ts, fim_ts = pd.Timestamp(inicio), pd.Timestamp(fim)
+    return df[(df.index >= ini_ts) & (df.index <= fim_ts)].sort_index()
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -258,6 +448,230 @@ def buscar_previsao(lat, lon, dias=16):
     h.set_index("time", inplace=True)
     df["humidity"] = h["relative_humidity_2m"].resample("D").mean().reindex(df.index)
     return df
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def buscar_previsao_horaria(lat, lon, dias=4):
+    """Previsão horária (Open-Meteo). Base para o Delta T e a janela de pulverização."""
+    url = "https://api.open-meteo.com/v1/forecast"
+    params = {
+        "latitude": lat, "longitude": lon,
+        "hourly": "temperature_2m,relative_humidity_2m,windspeed_10m,precipitation",
+        "timezone": "America/Belem",
+        "forecast_days": int(dias),
+    }
+    r = requests.get(url, params=params, timeout=30)
+    r.raise_for_status()
+    h = pd.DataFrame(r.json()["hourly"])
+    h["time"] = pd.to_datetime(h["time"])
+    h.set_index("time", inplace=True)
+    h = h.rename(columns={"temperature_2m": "temp", "relative_humidity_2m": "rh",
+                          "windspeed_10m": "wind", "precipitation": "precip"})
+    h["tw"] = temp_bulbo_umido(h["temp"].values, h["rh"].values)
+    h["dt"] = h["temp"] - h["tw"]
+    return h
+
+
+def carregar_csv_manual(arquivo):
+    """Lê um CSV de clima diário (fonte sem API, atualização manual) para o mesmo
+    esquema do histórico. Aceita nomes de coluna em PT ou EN."""
+    raw = pd.read_csv(arquivo)
+    raw.columns = [str(c).strip().lower() for c in raw.columns]
+    mapa = {
+        "data": "time", "date": "time", "dia": "time",
+        "temp_max": "temp_max", "tmax": "temp_max", "temperatura_max": "temp_max", "temp máxima": "temp_max",
+        "temp_min": "temp_min", "tmin": "temp_min", "temperatura_min": "temp_min", "temp mínima": "temp_min",
+        "temp_mean": "temp_mean", "tmed": "temp_mean", "temperatura_media": "temp_mean",
+        "precipitation": "precipitation", "precip": "precipitation", "chuva": "precipitation", "precipitacao": "precipitation",
+        "wind": "wind", "vento": "wind", "windspeed": "wind",
+        "humidity": "humidity", "umidade": "humidity", "ur": "humidity",
+        "et0": "et0", "eto": "et0", "evapotranspiracao": "et0",
+    }
+    raw = raw.rename(columns={c: mapa[c] for c in raw.columns if c in mapa})
+    if "time" not in raw.columns:
+        raise ValueError("O CSV precisa de uma coluna de data (data/date).")
+    faltando = [c for c in ("temp_max", "temp_min", "precipitation") if c not in raw.columns]
+    if faltando:
+        raise ValueError("Faltam colunas obrigatórias: " + ", ".join(faltando))
+    # Data: tenta ISO (2026-07-01) primeiro; se não casar, tenta dd/mm/aaaa
+    datas = pd.to_datetime(raw["time"], format="ISO8601", errors="coerce")
+    faltantes = datas.isna()
+    if faltantes.any():
+        datas[faltantes] = pd.to_datetime(raw["time"][faltantes], dayfirst=True, errors="coerce")
+    raw["time"] = datas
+    raw = raw.dropna(subset=["time"]).set_index("time").sort_index()
+    if "temp_mean" not in raw.columns:
+        raw["temp_mean"] = (raw["temp_max"] + raw["temp_min"]) / 2
+    for opc in ("wind", "humidity", "et0"):
+        if opc not in raw.columns:
+            raw[opc] = np.nan
+    return raw
+
+
+def csv_modelo():
+    """CSV de exemplo para o usuário preencher manualmente."""
+    idx = pd.date_range(date.today() - timedelta(days=4), periods=5)
+    exemplo = pd.DataFrame({
+        "data": idx.strftime("%d/%m/%Y"),
+        "temp_max": [32.1, 31.5, 33.0, 30.8, 32.4],
+        "temp_min": [23.0, 22.6, 23.4, 22.1, 23.2],
+        "precipitation": [0.0, 12.4, 3.2, 0.0, 8.1],
+        "wind": [9, 14, 7, 6, 11],
+        "humidity": [78, 88, 74, 70, 83],
+        "et0": [4.6, 3.1, 4.9, 5.2, 3.8],
+    })
+    return exemplo.to_csv(index=False).encode("utf-8")
+
+
+def mostrar_modelo_csv():
+    """Guia visual de como o CSV precisa estar para o app aceitar."""
+    st.markdown('<div class="section-title">Modelo do arquivo CSV</div>', unsafe_allow_html=True)
+    st.caption("Monte a planilha assim (uma linha por dia) e salve como CSV. "
+               "A primeira linha deve conter os nomes das colunas.")
+
+    exemplo = pd.DataFrame({
+        "data": ["01/07/2026", "02/07/2026", "03/07/2026"],
+        "temp_max": [32.1, 31.5, 33.0],
+        "temp_min": [23.0, 22.6, 23.4],
+        "precipitation": [0.0, 12.4, 3.2],
+        "wind": [9, 14, 7],
+        "humidity": [78, 88, 74],
+        "et0": [4.6, 3.1, 4.9],
+    })
+    st.dataframe(exemplo, width="stretch", hide_index=True)
+
+    col_a, col_b = st.columns([1.15, 1])
+    with col_a:
+        st.markdown('<div class="section-title" style="margin-top:6px;">Como o arquivo deve ficar por dentro</div>',
+                    unsafe_allow_html=True)
+        st.code("data,temp_max,temp_min,precipitation,wind,humidity,et0\n"
+                "01/07/2026,32.1,23.0,0.0,9,78,4.6\n"
+                "02/07/2026,31.5,22.6,12.4,14,88,3.1\n"
+                "03/07/2026,33.0,23.4,3.2,7,74,4.9", language="text")
+    with col_b:
+        st.markdown('<div class="section-title" style="margin-top:6px;">Regras das colunas</div>',
+                    unsafe_allow_html=True)
+        regras = pd.DataFrame({
+            "Coluna": ["data", "temp_max", "temp_min", "precipitation", "wind", "humidity", "et0"],
+            "Unidade": ["dd/mm/aaaa", "°C", "°C", "mm", "km/h", "%", "mm"],
+            "Obrigatória": ["Sim", "Sim", "Sim", "Sim", "Não", "Não", "Não"],
+            "Também aceita": ["date, dia", "tmax", "tmin", "chuva, precip",
+                              "vento", "umidade, ur", "eto"],
+        })
+        st.dataframe(regras, width="stretch", hide_index=True)
+
+    st.markdown("""
+    <div class="alert" style="border-left-color:#00e5ff;">
+      <div class="alert-head"><span class="alert-dot" style="background:#00e5ff;"></span>
+      <span class="alert-title" style="color:#00e5ff;">Pontos de atenção</span></div>
+      <div class="alert-text">
+        Use <b>ponto</b> como separador decimal (32.1, não 32,1) e <b>vírgula</b> para separar as colunas.<br>
+        A data pode vir como 01/07/2026 ou 2026-07-01 — as duas funcionam.<br>
+        Dias sem chuva devem ter <b>0</b>, não célula vazia.<br>
+        No Excel, salve com <b>Salvar como → CSV UTF-8 (delimitado por vírgula)</b>.
+      </div>
+    </div>""", unsafe_allow_html=True)
+
+    st.download_button("Baixar este modelo em CSV", data=csv_modelo(),
+                       file_name="modelo_clima.csv", mime="text/csv")
+
+
+COLS_MANUAIS = ["Data", "Temp. máx (°C)", "Temp. mín (°C)", "Chuva (mm)",
+                "Vento (km/h)", "Umidade (%)", "ET0 (mm)"]
+
+
+def tabela_manual_inicial(linhas=7):
+    """DataFrame vazio (datas recentes) para o usuário digitar na tabela do app."""
+    datas = pd.date_range(date.today() - timedelta(days=linhas - 1), periods=linhas).date
+    d = {"Data": list(datas)}
+    for c in COLS_MANUAIS[1:]:
+        d[c] = [None] * linhas
+    return pd.DataFrame(d)
+
+
+# Arquivo de persistência: fica ao lado do app.py, independentemente da pasta de execução
+ARQUIVO_MANUAL = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dados_manuais.csv")
+
+
+def carregar_tabela_manual():
+    """Lê a tabela manual salva em disco; se não existir, devolve a tabela inicial vazia."""
+    if os.path.exists(ARQUIVO_MANUAL):
+        try:
+            t = pd.read_csv(ARQUIVO_MANUAL)
+            for c in COLS_MANUAIS:
+                if c not in t.columns:
+                    t[c] = None
+            t = t[COLS_MANUAIS]
+            t["Data"] = pd.to_datetime(t["Data"], errors="coerce").dt.date
+            return t
+        except Exception:
+            pass
+    return tabela_manual_inicial()
+
+
+def salvar_tabela_manual(tab):
+    """Grava a tabela manual em disco (chamado a cada edição)."""
+    try:
+        tab.to_csv(ARQUIVO_MANUAL, index=False)
+        return True
+    except Exception:
+        return False
+
+
+# Persistência da planilha importada (CSV), no esquema interno já normalizado
+ARQUIVO_CSV_IMPORTADO = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                     "dados_importados.csv")
+
+
+def salvar_csv_importado(df):
+    """Guarda em disco a planilha importada, já normalizada, para reabrir depois."""
+    try:
+        df.to_csv(ARQUIVO_CSV_IMPORTADO, index_label="time")
+        return True
+    except Exception:
+        return False
+
+
+def carregar_csv_importado():
+    """Recarrega a última planilha importada; devolve None se não houver."""
+    if not os.path.exists(ARQUIVO_CSV_IMPORTADO):
+        return None
+    try:
+        d = pd.read_csv(ARQUIVO_CSV_IMPORTADO)
+        if "time" not in d.columns:
+            return None
+        d["time"] = pd.to_datetime(d["time"], errors="coerce")
+        d = d.dropna(subset=["time"]).set_index("time").sort_index()
+        return d if not d.empty else None
+    except Exception:
+        return None
+
+
+def apagar_csv_importado():
+    try:
+        if os.path.exists(ARQUIVO_CSV_IMPORTADO):
+            os.remove(ARQUIVO_CSV_IMPORTADO)
+    except Exception:
+        pass
+
+
+def tabela_para_df(tab):
+    """Converte a tabela editada (COLS_MANUAIS) para o esquema interno do app."""
+    t = tab.rename(columns={
+        "Data": "time", "Temp. máx (°C)": "temp_max", "Temp. mín (°C)": "temp_min",
+        "Chuva (mm)": "precipitation", "Vento (km/h)": "wind",
+        "Umidade (%)": "humidity", "ET0 (mm)": "et0",
+    })
+    t["time"] = pd.to_datetime(t["time"], errors="coerce")
+    for c in ("temp_max", "temp_min", "precipitation", "wind", "humidity", "et0"):
+        if c in t.columns:
+            t[c] = pd.to_numeric(t[c], errors="coerce")
+    t = t.dropna(subset=["time", "temp_max", "temp_min", "precipitation"])
+    if t.empty:
+        return t
+    t = t.set_index("time").sort_index()
+    t["temp_mean"] = (t["temp_max"] + t["temp_min"]) / 2
+    return t
 
 
 def agregar(df, agg):
@@ -377,7 +791,7 @@ with st.sidebar:
     cidade = st.selectbox("Cidade", list(CIDADES.keys()), label_visibility="collapsed")
     st.markdown("---")
     st.markdown('<div class="side-label">Período de análise</div>', unsafe_allow_html=True)
-    DATA_MAX = date.today() - timedelta(days=7)
+    DATA_MAX = date.today()
     c1, c2 = st.columns(2)
     with c1:
         data_inicio = st.date_input("Início", value=date(2023,1,1),
@@ -406,7 +820,32 @@ with st.sidebar:
     st.markdown('<div class="side-label" style="margin-top:10px;">Previsão</div>', unsafe_allow_html=True)
     dias_previsao = st.select_slider("Horizonte (dias)", options=[7,10,14,16], value=14)
     st.markdown("---")
-    st.markdown('<div class="note">Fonte: Open-Meteo Archive + Forecast API.<br>Sem necessidade de chave de API.</div>',
+    st.markdown('<div class="side-label">Fonte dos dados</div>', unsafe_allow_html=True)
+    fonte = st.radio("Fonte dos dados", ["Open-Meteo (API)", "Inserir manualmente"],
+                     label_visibility="collapsed")
+    metodo_manual = None
+    arquivo_csv = None
+    if fonte == "Inserir manualmente":
+        metodo_manual = st.radio("Como inserir", ["Digitar na tabela", "Enviar CSV"],
+                                 help="Digite os dias direto na tabela do app, sem planilha, "
+                                      "ou envie um CSV se preferir.")
+        if metodo_manual == "Enviar CSV":
+            arquivo_csv = st.file_uploader("Enviar CSV diário", type=["csv"], label_visibility="collapsed")
+            st.markdown('<div class="note">O modelo de como formatar o arquivo aparece na página.</div>',
+                        unsafe_allow_html=True)
+        else:
+            st.markdown('<div class="note">A tabela para digitar aparece no topo da página.</div>',
+                        unsafe_allow_html=True)
+    st.markdown('<div class="side-label" style="margin-top:12px;">Fase do ENOS</div>', unsafe_allow_html=True)
+    enos_fase = st.selectbox("Fase do ENOS", ["Neutro", "El Niño", "La Niña"],
+                             label_visibility="collapsed",
+                             help="Leia a fase atual no boletim do CPTEC/INPE, INMET ou NOAA e "
+                                  "selecione aqui — não há API aberta para isso.")
+    enos_int = "—"
+    if enos_fase != "Neutro":
+        enos_int = st.selectbox("Intensidade", ["Fraco", "Moderado", "Forte"])
+    st.markdown("---")
+    st.markdown('<div class="note">Dados até hoje: Open-Meteo Archive + Forecast (past_days).<br>Sem necessidade de chave de API.</div>',
                 unsafe_allow_html=True)
 
 # ── Validação ──────────────────────────────────────────────────────────────────
@@ -431,17 +870,112 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ── Carrega dados ──────────────────────────────────────────────────────────────
-with st.spinner("Carregando dados climáticos..."):
-    try:
-        df = buscar_clima(lat, lon, data_inicio, data_fim)
-    except Exception as e:
-        st.error(f"Não foi possível buscar os dados: {e}")
+modo_manual = fonte == "Inserir manualmente"
+if modo_manual:
+    if metodo_manual == "Enviar CSV":
+        if arquivo_csv is not None:
+            try:
+                df = carregar_csv_manual(arquivo_csv)
+            except Exception as e:
+                st.error(f"Não foi possível ler o CSV: {e}")
+                st.caption("Confira o modelo abaixo e ajuste o arquivo.")
+                mostrar_modelo_csv()
+                st.stop()
+            if df.empty:
+                st.error("O CSV não tem linhas válidas. Confira o modelo abaixo.")
+                mostrar_modelo_csv()
+                st.stop()
+            salvar_csv_importado(df)          # guarda para as próximas aberturas
+            origem_csv = "novo"
+        else:
+            df = carregar_csv_importado()     # nenhuma planilha enviada agora: usa a última
+            if df is None:
+                st.info("Envie o arquivo CSV na barra lateral. Veja abaixo como ele precisa estar formatado.")
+                mostrar_modelo_csv()
+                st.stop()
+            origem_csv = "salvo"
+
+        periodo = (f"{df.index.min().strftime('%d/%m/%Y')} a "
+                   f"{df.index.max().strftime('%d/%m/%Y')}")
+        if origem_csv == "novo":
+            st.success(f"Planilha carregada e salva: {len(df)} dias, de {periodo}. "
+                       f"Ela será recarregada automaticamente da próxima vez que você abrir o app.")
+        else:
+            st.info(f"Usando a última planilha importada: {len(df)} dias, de {periodo}. "
+                    f"Envie um novo CSV na barra lateral para substituí-la.")
+
+        c_info, c_apagar = st.columns([4, 1])
+        with c_info:
+            st.caption(f"Salvo em {os.path.basename(ARQUIVO_CSV_IMPORTADO)}")
+        with c_apagar:
+            if st.button("Apagar planilha", width="stretch"):
+                apagar_csv_importado()
+                st.rerun()
+
+        with st.expander("Ver o modelo de formatação do CSV"):
+            mostrar_modelo_csv()
+    else:
+        st.markdown('<div class="section-title">Inserir dados manualmente</div>', unsafe_allow_html=True)
+        st.caption("Digite os dias direto na tabela (clique numa célula). Use o + para adicionar linhas. "
+                   "Temp. máx, Temp. mín e Chuva são obrigatórias; vento, umidade e ET0 são opcionais. "
+                   "Tudo é salvo automaticamente e reaparece quando você abrir o app de novo.")
+        if "tabela_manual" not in st.session_state:
+            st.session_state["tabela_manual"] = carregar_tabela_manual()
+
+        editado = st.data_editor(
+            st.session_state["tabela_manual"], num_rows="dynamic", width="stretch",
+            key="editor_manual",
+            column_config={
+                "Data": st.column_config.DateColumn("Data", format="DD/MM/YYYY"),
+                "Temp. máx (°C)": st.column_config.NumberColumn("Temp. máx (°C)", format="%.1f"),
+                "Temp. mín (°C)": st.column_config.NumberColumn("Temp. mín (°C)", format="%.1f"),
+                "Chuva (mm)": st.column_config.NumberColumn("Chuva (mm)", format="%.1f"),
+                "Vento (km/h)": st.column_config.NumberColumn("Vento (km/h)", format="%.1f"),
+                "Umidade (%)": st.column_config.NumberColumn("Umidade (%)", format="%.0f"),
+                "ET0 (mm)": st.column_config.NumberColumn("ET0 (mm)", format="%.1f"),
+            })
+
+        # Persiste na sessão e em disco automaticamente, só quando algo muda
+        csv_txt = editado.to_csv(index=False)
+        if st.session_state.get("_hash_manual") != csv_txt:
+            st.session_state["tabela_manual"] = editado
+            salvar_tabela_manual(editado)
+            st.session_state["_hash_manual"] = csv_txt
+
+        c_status, c_limpar = st.columns([4, 1])
+        with c_status:
+            st.caption(f"Salvo automaticamente em {os.path.basename(ARQUIVO_MANUAL)}")
+        with c_limpar:
+            if st.button("Limpar tabela", width="stretch"):
+                st.session_state["tabela_manual"] = tabela_manual_inicial()
+                st.session_state.pop("_hash_manual", None)
+                st.session_state.pop("editor_manual", None)
+                if os.path.exists(ARQUIVO_MANUAL):
+                    try:
+                        os.remove(ARQUIVO_MANUAL)
+                    except Exception:
+                        pass
+                st.rerun()
+
+        df = tabela_para_df(editado)
+        if len(df) < 2:
+            st.info("Preencha ao menos 2 dias (com temp. máx, temp. mín e chuva) para ver os gráficos.")
+            st.stop()
+    if df.empty:
+        st.error("Não há linhas válidas nos dados manuais.")
         st.stop()
+else:
+    with st.spinner("Carregando dados climáticos..."):
+        try:
+            df = buscar_clima(lat, lon, data_inicio, data_fim)
+        except Exception as e:
+            st.error(f"Não foi possível buscar os dados: {e}")
+            st.stop()
 
 df_agg = agregar(df, agregacao)
 
-tab_hist, tab_prev, tab_cal, tab_agro = st.tabs([
-    "HISTÓRICO", "PREVISÃO", "CALENDÁRIO AGRÍCOLA", "PAINEL AGRONÔMICO"
+tab_hist, tab_prev, tab_cal, tab_lua, tab_agro = st.tabs([
+    "HISTÓRICO", "PREVISÃO", "CALENDÁRIO AGRÍCOLA", "CALENDÁRIO LUNAR", "PAINEL AGRONÔMICO"
 ])
 
 # ════════════════════════════════════════════════════════════════════ HISTÓRICO ═
@@ -570,11 +1104,16 @@ with tab_hist:
 with tab_prev:
     st.markdown(f'<div class="section-title">Próximos {dias_previsao} dias · {cidade}</div>',
                 unsafe_allow_html=True)
-    try:
-        fc = buscar_previsao(lat, lon, dias_previsao)
-    except Exception as e:
-        st.error(f"Não foi possível obter a previsão: {e}")
+    if modo_manual:
+        st.info("A previsão vem da API online do Open-Meteo. No modo de atualização manual (CSV) ela "
+                "fica indisponível — troque a fonte para Open-Meteo na barra lateral para usá-la.")
         fc = None
+    else:
+        try:
+            fc = buscar_previsao(lat, lon, dias_previsao)
+        except Exception as e:
+            st.error(f"Não foi possível obter a previsão: {e}")
+            fc = None
 
     if fc is not None and not fc.empty:
         st.markdown("<br>", unsafe_allow_html=True)
@@ -666,6 +1205,75 @@ with tab_prev:
         st.markdown('<div class="note" style="margin-top:8px;">Previsão de até 16 dias — quanto mais '
                     'distante o dia, maior a incerteza. Use os primeiros dias para decisões operacionais.</div>',
                     unsafe_allow_html=True)
+
+        # ── Delta T — janela de pulverização hora a hora ────────────────────────
+        st.markdown('<div class="section-title" style="margin-top:22px;">Delta T · janela de '
+                    'pulverização (próximas 96 h)</div>', unsafe_allow_html=True)
+        try:
+            fch = buscar_previsao_horaria(lat, lon, 4)
+        except Exception as e:
+            fch = None
+            st.warning(f"Não foi possível obter a previsão horária para o Delta T: {e}")
+
+        if fch is not None and not fch.empty:
+            agora = pd.Timestamp.now().normalize()
+            fch = fch[fch.index >= agora].head(96)
+            pct_ideal = float(fch["dt"].between(*DT_IDEAL).mean() * 100)
+            dt_agora = float(fch["dt"].iloc[0])
+            cls_nome, cls_cor = classe_delta_t(dt_agora)
+            kpis_dt = [
+                ("Delta T inicial", f"{dt_agora:.1f}", "°C · agora", cls_cor),
+                ("Condição", cls_nome, "faixa atual", cls_cor),
+                ("Horas ideais", f"{pct_ideal:.0f}", "% das próximas 96 h", "#2dd4a7"),
+                ("Faixa ideal", "2–8", "°C (padrão BOM/GRDC)", "#00e5ff"),
+            ]
+            for col, (lb, vl, un, cor) in zip(st.columns(4), kpis_dt):
+                cartao_kpi(col, lb, vl, un, cor)
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            fig_dt = go.Figure()
+            # faixas de referência
+            fig_dt.add_hrect(y0=2, y1=8, fillcolor="rgba(45,212,167,0.10)", line_width=0,
+                             annotation_text="ideal 2–8", annotation_font_color="#2dd4a7",
+                             annotation_font_size=10, annotation_position="top left")
+            fig_dt.add_hrect(y0=0, y1=2, fillcolor="rgba(251,146,60,0.08)", line_width=0)
+            fig_dt.add_hrect(y0=8, y1=10, fillcolor="rgba(251,146,60,0.08)", line_width=0)
+            fig_dt.add_trace(go.Scatter(x=fch.index, y=fch["dt"], name="Delta T",
+                line=dict(color="#00e5ff", width=2), mode="lines"))
+            fig_dt.add_trace(go.Scatter(x=fch.index, y=fch["wind"], name="Vento (km/h)", yaxis="y2",
+                line=dict(color="#fb923c", width=1, dash="dot"), mode="lines", opacity=0.7))
+            fig_dt.update_layout(**LAYOUT_BASE, height=320, legend=_LEGEND,
+                title=_TITLE("Delta T e vento hora a hora"),
+                yaxis={**_YAXIS, "title": "Delta T (°C)"}, yaxis2={**_YAXIS2, "title": "Vento (km/h)"})
+            st.plotly_chart(fig_dt, width="stretch")
+
+            janelas = janelas_pulverizacao(fch)
+            dias_sem = {0:"Seg",1:"Ter",2:"Qua",3:"Qui",4:"Sex",5:"Sáb",6:"Dom"}
+            if janelas:
+                itens = []
+                for ini, fim in janelas[:8]:
+                    dia = f"{dias_sem[ini.weekday()]} {ini.day:02d}/{ini.month:02d}"
+                    itens.append(f"{dia}: {ini.hour:02d}h–{(fim.hour+1):02d}h")
+                txt = " · ".join(itens)
+                st.markdown(f"""
+                <div class="alert" style="border-left-color:#2dd4a7;">
+                  <div class="alert-head"><span class="alert-dot" style="background:#2dd4a7;"></span>
+                  <span class="alert-title" style="color:#2dd4a7;">Melhores janelas para pulverizar</span></div>
+                  <div class="alert-text">{txt}</div>
+                </div>""", unsafe_allow_html=True)
+            else:
+                st.markdown("""
+                <div class="alert" style="border-left-color:#fb923c;">
+                  <div class="alert-head"><span class="alert-dot" style="background:#fb923c;"></span>
+                  <span class="alert-title" style="color:#fb923c;">Sem janela ideal nas próximas 96 h</span></div>
+                  <div class="alert-text">Delta T, vento ou chuva fora da faixa recomendada. Reavalie
+                  nas primeiras horas da manhã ou fim de tarde, quando o Delta T costuma cair.</div>
+                </div>""", unsafe_allow_html=True)
+
+            st.markdown('<div class="note" style="margin-top:8px;">Delta T = temperatura do ar − '
+                        'temperatura de bulbo úmido (fórmula de Stull, 2011). Janela boa = Delta T entre '
+                        '2 e 8 °C, vento de 3 a 15 km/h e sem chuva. É um guia; confira sempre o rótulo do '
+                        'produto e as condições no talhão.</div>', unsafe_allow_html=True)
 
 # ════════════════════════════════════════════════════════════ CALENDÁRIO AGRÍCOLA ═
 with tab_cal:
@@ -783,10 +1391,89 @@ with tab_cal:
           <div class="alert-text">{texto}</div>
         </div>""", unsafe_allow_html=True)
 
+    # ── El Niño / La Niña (ENOS) ────────────────────────────────────────────────
+    st.markdown('<div class="section-title" style="margin-top:18px;">El Niño / La Niña (ENOS)</div>',
+                unsafe_allow_html=True)
+    ei = ENOS_INFO[enos_fase]
+    rotulo_int = "" if enos_fase == "Neutro" else f" · intensidade {enos_int.lower()}"
+    st.markdown(f"""
+    <div class="alert" style="border-left-color:{ei['cor']};">
+      <div class="alert-head"><span class="alert-dot" style="background:{ei['cor']};"></span>
+      <span class="alert-title" style="color:{ei['cor']};">{ei['titulo']}{rotulo_int}</span></div>
+      <div class="alert-text">{ei['texto']}</div>
+    </div>""", unsafe_allow_html=True)
+    if enos_fase != "Neutro":
+        if enos_fase == "El Niño":
+            extra = ("Com El Niño, a estação chuvosa detectada acima tende a chegar mais tarde e/ou "
+                     "render menos que a média histórica — trate a janela como um teto otimista.")
+        else:
+            extra = ("Com La Niña, a chuva tende a superar a média histórica — a janela detectada é "
+                     "conservadora, mas vigie o excesso na colheita.")
+        st.markdown(f'<div class="note" style="margin-top:2px;">{extra}</div>', unsafe_allow_html=True)
+
     st.markdown('<div class="note" style="margin-top:12px;">O início das chuvas é detectado pela '
                 'climatologia de precipitação da cidade selecionada (ajuste o limiar na barra '
-                'lateral). As durações de ciclo são típicas; confirme as datas no ZARC do município '
-                'antes de plantar.</div>', unsafe_allow_html=True)
+                'lateral). A fase do ENOS é informada manualmente (barra lateral), lida do boletim do '
+                'CPTEC/INPE, INMET ou NOAA. As durações de ciclo são típicas; confirme as datas no '
+                'ZARC do município antes de plantar.</div>', unsafe_allow_html=True)
+
+
+# ══════════════════════════════════════════════════════════════════ CALENDÁRIO LUNAR ═
+with tab_lua:
+    st.markdown('<div class="section-title">Fase da lua e manejo (tradição agrícola brasileira)</div>',
+                unsafe_allow_html=True)
+    idade = idade_lunar()
+    nome_lua, illum, frac_lua = fase_lunar(idade)
+    cor_lua = FASES_LUA[nome_lua]["cor"]
+
+    c_lua, c_txt = st.columns([1, 2.4])
+    with c_lua:
+        st.markdown(f"""
+        <div style="text-align:center;padding:8px 0;">
+          {desenhar_lua_svg(illum, frac_lua, 130)}
+          <div style="font-family:'Space Mono',monospace;font-size:1.15rem;color:{cor_lua};margin-top:8px;">{nome_lua}</div>
+          <div class="note">{illum*100:.0f}% iluminada · {idade:.0f} dias de idade</div>
+        </div>""", unsafe_allow_html=True)
+    with c_txt:
+        st.markdown(f"""
+        <div class="crop-card" style="height:100%;">
+          <div class="crop-head"><span class="crop-dot" style="background:{cor_lua};"></span>Manejo indicado agora</div>
+          <div class="crop-body">{LUA_MANEJO[nome_lua]}</div>
+          <div class="crop-body" style="margin-top:10px;color:#e8f4fd;">
+            Para <b>grãos (soja e milho)</b>, esta fase é
+            <b style="color:{cor_lua};">{LUA_GRAOS[nome_lua]}</b>.
+            A tradição planta grãos na <b>crescente</b> e colhe na <b>cheia</b>.
+          </div>
+        </div>""", unsafe_allow_html=True)
+
+    # Próximas fases principais
+    st.markdown('<div class="section-title" style="margin-top:18px;">Próximas fases</div>',
+                unsafe_allow_html=True)
+    principais = [("Nova", 0.0, "#7ba3c8"), ("Quarto crescente", 0.25, "#2dd4a7"),
+                  ("Cheia", 0.5, "#ffd166"), ("Quarto minguante", 0.75, "#fb923c")]
+    dias_pt = {0:"Seg",1:"Ter",2:"Qua",3:"Qui",4:"Sex",5:"Sáb",6:"Dom"}
+    for col, (nome_p, fr_p, cor_p) in zip(st.columns(4), principais):
+        d = proxima_fase_principal(fr_p)
+        cartao_kpi(col, nome_p, d.strftime("%d/%m"), dias_pt[d.weekday()], cor_p)
+
+    # Calendário do ciclo lunar atual (mini timeline)
+    st.markdown('<div class="section-title" style="margin-top:18px;">O que a tradição indica em cada fase</div>',
+                unsafe_allow_html=True)
+    for col, fase in zip(st.columns(4), ["Nova", "Crescente", "Cheia", "Minguante"]):
+        cor_f = FASES_LUA[fase]["cor"]
+        atual = " (agora)" if fase == nome_lua else ""
+        col.markdown(f"""
+        <div class="crop-card" style="height:100%;">
+          <div class="crop-head"><span class="crop-dot" style="background:{cor_f};"></span>{fase}{atual}</div>
+          <div class="crop-body">{LUA_MANEJO[fase]}</div>
+        </div>""", unsafe_allow_html=True)
+
+    st.markdown('<div class="note" style="margin-top:14px;">O calendário lunar de plantio é uma '
+                'tradição do campo brasileiro, baseada na observação de gerações. Não há comprovação '
+                'científica robusta de efeito das fases da lua na produtividade — fatores como solo, '
+                'chuva, adubação e cultivar têm peso muito maior. Use como complemento cultural às '
+                'outras abas, não como regra isolada. Fases calculadas astronomicamente (sem API).</div>',
+                unsafe_allow_html=True)
 
 
 # ═══════════════════════════════════════════════════════════════ PAINEL AGRONÔMICO ═
