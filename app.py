@@ -44,6 +44,14 @@ a[href*="share.streamlit"]{display:none !important;}
 [class*="stAppViewerBadge"]{display:none !important;}
 img[src*="storage.googleapis.com/streamlit"]{display:none !important;}
 img[alt*="profile" i]{display:none !important;}
+/* Nomes REAIS confirmados pelo inspetor: avatar do criador + link da coroa.
+   O sufixo (_gzau3) é um hash que muda a cada deploy, então usamos o prefixo. */
+[data-testid="appCreatorAvatar"]{display:none !important;}
+img[alt="App Creator Avatar"]{display:none !important;}
+[class^="_profileImage"], [class*=" _profileImage"]{display:none !important;}
+[class^="_profileContainer"], [class*=" _profileContainer"]{display:none !important;}
+[class^="_link_"], [class*=" _link_"]{display:none !important;}
+[class^="_container_"], [class*=" _container_"]{display:none !important;}
 [data-testid="stAppViewBlockContainer"] ~ div a[href*="streamlit"]{display:none !important;}
 /* Bloco fixo no rodapé (independe do nome da classe) */
 .stApp > div:last-child a[href*="streamlit"]{display:none !important;}
