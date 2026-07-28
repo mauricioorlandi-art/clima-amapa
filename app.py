@@ -116,6 +116,21 @@ h1,h2,h3{font-family:'Space Mono',monospace!important;letter-spacing:-.01em;}
 
 .nota{color:var(--tenue);font-size:.74rem;line-height:1.5;}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
+
+/* Garante que o botão nativo de abrir a sidebar apareça e fique bem visível.
+   O header foi deixado transparente antes, o que escondia essa seta — aqui a
+   trazemos de volta, destacada. */
+[data-testid="stSidebarCollapsedControl"],
+[data-testid="collapsedControl"]{
+  display:flex !important; visibility:visible !important; opacity:1 !important;
+  z-index:999999 !important; top:12px !important; left:12px !important;}
+[data-testid="stSidebarCollapsedControl"] button,
+[data-testid="collapsedControl"] button{
+  background:var(--superficie) !important; border:1px solid var(--destaque) !important;
+  color:var(--destaque) !important; border-radius:9px !important;
+  width:auto !important; height:auto !important; padding:6px 9px !important;}
+[data-testid="stSidebarCollapsedControl"] svg,
+[data-testid="collapsedControl"] svg{color:var(--destaque) !important; fill:var(--destaque) !important;}
 </style>
 """, unsafe_allow_html=True)
 
