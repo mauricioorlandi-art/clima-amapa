@@ -30,16 +30,15 @@ header[data-testid="stHeader"]{background:transparent !important;}
 #MainMenu{visibility:hidden !important;}
 footer{visibility:hidden !important;}
 .stAppDeployButton{display:none !important;}
-/* Selo "Hosted with Streamlit" no canto inferior */
+/* Selo "Hosted with Streamlit" no canto inferior — várias abordagens */
 [data-testid="stBottomBlockContainer"] a[href*="streamlit.io"]{display:none !important;}
-a[href*="streamlit.io/cloud"]{display:none !important;}
-.viewerBadge_container__1QSob{display:none !important;}
-.viewerBadge_link__qRIco{display:none !important;}
-._profileContainer_gzau3_53{display:none !important;}
-._container_gzau3_1{display:none !important;}
-._link_gzau3_10{display:none !important;}
-div[class*="viewerBadge"]{display:none !important;}
-div[class*="_profileContainer"]{display:none !important;}
+a[href*="streamlit.io"]{display:none !important;}
+a[href*="share.streamlit"]{display:none !important;}
+[class*="viewerBadge"]{display:none !important;}
+[class*="profileContainer"]{display:none !important;}
+[data-testid="stAppViewBlockContainer"] ~ div a[href*="streamlit"]{display:none !important;}
+/* Bloco fixo no rodapé (independe do nome da classe) */
+.stApp > div:last-child a[href*="streamlit"]{display:none !important;}
 :root{
   --fundo:#0a1628; --superficie:#0f2040; --superficie2:#13284c;
   --linha:#1e3a64; --linha-suave:#16305a;
