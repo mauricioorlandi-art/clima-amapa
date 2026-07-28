@@ -26,7 +26,8 @@ st.markdown("""
 [data-testid="stToolbarActions"]{display:none !important;}
 [data-testid="stDecoration"]{display:none !important;}
 [data-testid="stStatusWidget"]{display:none !important;}
-header[data-testid="stHeader"]{background:transparent !important;}
+header[data-testid="stHeader"]{background:transparent !important; pointer-events:none !important;}
+header[data-testid="stHeader"] *{pointer-events:auto !important;}
 #MainMenu{visibility:hidden !important;}
 .stAppDeployButton{display:none !important;}
 :root{
@@ -117,20 +118,24 @@ h1,h2,h3{font-family:'Space Mono',monospace!important;letter-spacing:-.01em;}
 .nota{color:var(--tenue);font-size:.74rem;line-height:1.5;}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
 
-/* Garante que o botão nativo de abrir a sidebar apareça e fique bem visível.
-   O header foi deixado transparente antes, o que escondia essa seta — aqui a
-   trazemos de volta, destacada. */
+/* Garante que o botão nativo de abrir a sidebar apareça SEMPRE (o Streamlit o
+   esconde por padrão e só mostra no hover; aqui forçamos visível e fixo). */
 [data-testid="stSidebarCollapsedControl"],
 [data-testid="collapsedControl"]{
   display:flex !important; visibility:visible !important; opacity:1 !important;
-  z-index:999999 !important; top:12px !important; left:12px !important;}
+  transform:none !important; transition:none !important; pointer-events:auto !important;
+  position:fixed !important; z-index:999999 !important; top:12px !important; left:12px !important;}
+[data-testid="stSidebarCollapsedControl"] *,
+[data-testid="collapsedControl"] *{opacity:1 !important; visibility:visible !important;}
 [data-testid="stSidebarCollapsedControl"] button,
 [data-testid="collapsedControl"] button{
   background:var(--superficie) !important; border:1px solid var(--destaque) !important;
-  color:var(--destaque) !important; border-radius:9px !important;
-  width:auto !important; height:auto !important; padding:6px 9px !important;}
+  color:var(--destaque) !important; border-radius:9px !important; opacity:1 !important;
+  width:auto !important; height:auto !important; padding:6px 9px !important;
+  box-shadow:0 2px 10px rgba(0,0,0,.4) !important;}
 [data-testid="stSidebarCollapsedControl"] svg,
-[data-testid="collapsedControl"] svg{color:var(--destaque) !important; fill:var(--destaque) !important;}
+[data-testid="collapsedControl"] svg{color:var(--destaque) !important; fill:var(--destaque) !important;
+  width:22px !important; height:22px !important;}
 </style>
 """, unsafe_allow_html=True)
 
