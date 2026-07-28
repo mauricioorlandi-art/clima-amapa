@@ -8,7 +8,6 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import date, datetime, timedelta, timezone
 
-
 # ── Configuração da página ──────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Clima Amapá",
@@ -29,33 +28,7 @@ st.markdown("""
 [data-testid="stStatusWidget"]{display:none !important;}
 header[data-testid="stHeader"]{background:transparent !important;}
 #MainMenu{visibility:hidden !important;}
-footer{visibility:hidden !important;}
 .stAppDeployButton{display:none !important;}
-/* Selo "Hosted with Streamlit" no canto inferior — várias abordagens */
-[data-testid="stBottomBlockContainer"] a[href*="streamlit.io"]{display:none !important;}
-a[href*="streamlit.io"]{display:none !important;}
-a[href*="share.streamlit"]{display:none !important;}
-[class*="viewerBadge"]{display:none !important;}
-[class*="profileContainer"]{display:none !important;}
-/* Avatar/imagem do perfil do viewer no canto inferior */
-[class*="viewerBadge"] img{display:none !important;}
-[class*="profileContainer"] img{display:none !important;}
-[class*="_profile"]{display:none !important;}
-[class*="_viewerBadge"]{display:none !important;}
-[class*="stAppViewerBadge"]{display:none !important;}
-img[src*="storage.googleapis.com/streamlit"]{display:none !important;}
-img[alt*="profile" i]{display:none !important;}
-/* Nomes REAIS confirmados pelo inspetor: avatar do criador + link da coroa.
-   O sufixo (_gzau3) é um hash que muda a cada deploy, então usamos o prefixo. */
-[data-testid="appCreatorAvatar"]{display:none !important;}
-img[alt="App Creator Avatar"]{display:none !important;}
-[class^="_profileImage"], [class*=" _profileImage"]{display:none !important;}
-[class^="_profileContainer"], [class*=" _profileContainer"]{display:none !important;}
-[class^="_link_"], [class*=" _link_"]{display:none !important;}
-[class^="_container_"], [class*=" _container_"]{display:none !important;}
-[data-testid="stAppViewBlockContainer"] ~ div a[href*="streamlit"]{display:none !important;}
-/* Bloco fixo no rodapé (independe do nome da classe) */
-.stApp > div:last-child a[href*="streamlit"]{display:none !important;}
 :root{
   --fundo:#0a1628; --superficie:#0f2040; --superficie2:#13284c;
   --linha:#1e3a64; --linha-suave:#16305a;
@@ -70,6 +43,7 @@ html,body,[data-testid="stAppViewContainer"]{
   color:var(--texto)!important; font-family:'DM Sans',sans-serif;
 }
 [data-testid="stSidebar"]{background:linear-gradient(180deg,#0a1f3d,#071530)!important;border-right:1px solid var(--linha);}
+section[data-testid="stSidebar"]{display:flex !important;visibility:visible !important;}
 [data-testid="stSidebar"] *{color:var(--texto)!important;}
 [data-testid="stSidebar"] hr{border-color:var(--linha-suave)!important;margin:14px 0!important;}
 h1,h2,h3{font-family:'Space Mono',monospace!important;letter-spacing:-.01em;}
