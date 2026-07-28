@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import date, datetime, timedelta, timezone
 
+
 # ── Configuração da página ──────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Clima Amapá",
