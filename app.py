@@ -480,9 +480,20 @@ def buscar_previsao_horaria(lat, lon, dias=4):
 
 def carregar_planilha(arquivo):
     """Lê um CSV de clima diário (fonte sem API, atualização manual) para o mesmo
-    esquema do histórico. Aceita nomes de coluna em PT ou EN."""
-    bruto = pd.read_csv(arquivo)
-    bruto.columns = [str(c).strip().lower() for c in bruto.columns]
+    esquema do histórico. Aceita nomes de coluna em PT ou EN, separador ',' ou ';'."""
+    # Detecta o separador (',' internacional ou ';' do Excel-BR) lendo o cabeçalho
+    try:
+        amostra = arquivo.read(2048)
+        arquivo.seek(0)
+        if isinstance(amostra, bytes):
+            amostra = amostra.decode("utf-8-sig", errors="ignore")
+    except Exception:
+        amostra = ""
+    separador = ";" if amostra.count(";") > amostra.count(",") else ","
+    # Se o separador é ';', a vírgula costuma ser decimal (padrão brasileiro)
+    decimal = "," if separador == ";" else "."
+    bruto = pd.read_csv(arquivo, sep=separador, decimal=decimal, encoding="utf-8-sig")
+    bruto.columns = [str(c).strip().lower().lstrip("\ufeff") for c in bruto.columns]
     mapa = {
         # data
         "data": "data", "date": "data", "dia": "data",
@@ -540,7 +551,9 @@ def planilha_modelo():
         "umidade": [78, 88, 74, 70, 83],
         "et0": [4.6, 3.1, 4.9, 5.2, 3.8],
     })
-    return exemplo.to_csv(index=False).encode("utf-8")
+    # Excel em português usa ';' como separador de colunas. O BOM (utf-8-sig) faz
+    # o Excel abrir com acentos corretos e reconhecer o ';' automaticamente.
+    return exemplo.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
 
 
 def mostrar_modelo_planilha():
@@ -581,10 +594,11 @@ def mostrar_modelo_planilha():
       <span class="alerta-titulo" style="color:#00e5ff;">Pontos de atenção</span></div>
       <div class="alerta-texto">
         Cada linha é um dia; a primeira linha da planilha deve ter os nomes das colunas.<br>
-        Use <b>ponto</b> como separador decimal (32.1, não 32,1).<br>
+        O modelo já vem no formato que o Excel brasileiro abre certo (separado por ponto e vírgula).<br>
+        Ao editar, mantenha uma coluna por campo e não junte tudo numa célula só.<br>
         A data pode ser 01/07/2026 ou 2026-07-01 — as duas funcionam.<br>
         Dias sem chuva devem ter <b>0</b>, não célula vazia.<br>
-        No Excel, salve com <b>Salvar como → CSV UTF-8 (delimitado por vírgula)</b>.
+        No Excel, salve com <b>Salvar como → CSV UTF-8</b>.
       </div>
     </div>""", unsafe_allow_html=True)
 
