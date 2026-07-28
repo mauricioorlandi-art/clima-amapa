@@ -20,6 +20,16 @@ st.set_page_config(
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600;700&display=swap');
+
+/* Esconde o menu superior do Streamlit Cloud (Fork, GitHub, três pontos) */
+[data-testid="stToolbar"]{display:none !important;}
+[data-testid="stToolbarActions"]{display:none !important;}
+[data-testid="stDecoration"]{display:none !important;}
+[data-testid="stStatusWidget"]{display:none !important;}
+header[data-testid="stHeader"]{background:transparent !important;}
+#MainMenu{visibility:hidden !important;}
+footer{visibility:hidden !important;}
+.stAppDeployButton{display:none !important;}
 :root{
   --fundo:#0a1628; --superficie:#0f2040; --superficie2:#13284c;
   --linha:#1e3a64; --linha-suave:#16305a;
