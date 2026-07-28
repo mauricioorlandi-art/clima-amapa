@@ -36,6 +36,16 @@ a[href*="streamlit.io"]{display:none !important;}
 a[href*="share.streamlit"]{display:none !important;}
 [class*="viewerBadge"]{display:none !important;}
 [class*="profileContainer"]{display:none !important;}
+/* Avatar/imagem do perfil do viewer no canto inferior */
+[class*="viewerBadge"] img{display:none !important;}
+[class*="profileContainer"] img{display:none !important;}
+[class*="_profile"]{display:none !important;}
+[class*="_viewerBadge"]{display:none !important;}
+[class*="stAppViewerBadge"]{display:none !important;}
+img[src*="storage.googleapis.com/streamlit"]{display:none !important;}
+img[alt*="profile" i]{display:none !important;}
+[data-testid="stApp"] > div:last-child{display:none !important;}
+[data-testid="stAppViewContainer"] ~ div:last-of-type{display:none !important;}
 [data-testid="stAppViewBlockContainer"] ~ div a[href*="streamlit"]{display:none !important;}
 /* Bloco fixo no rodapé (independe do nome da classe) */
 .stApp > div:last-child a[href*="streamlit"]{display:none !important;}
