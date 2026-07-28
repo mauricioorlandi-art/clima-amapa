@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 import requests
 import os
 import math
@@ -144,52 +143,6 @@ h1,h2,h3{font-family:'Space Mono',monospace!important;letter-spacing:-.01em;}
 @media (prefers-reduced-motion:reduce){*{transition:none!important;}}
 </style>
 """, unsafe_allow_html=True)
-
-# ── Remoção do selo/avatar do Streamlit Cloud via JS (roda no navegador) ────────
-components.html("""
-<script>
-(function(){
-  function limpar(doc){
-    if(!doc) return;
-    try{
-      // avatar do criador (data-testid confirmado)
-      doc.querySelectorAll('[data-testid="appCreatorAvatar"]').forEach(function(el){
-        var alvo = el.closest('a') || el.parentElement || el;
-        if(alvo) alvo.style.display='none';
-        el.style.display='none';
-      });
-      // qualquer link que aponte para o streamlit (a coroa "Hosted with")
-      doc.querySelectorAll('a[href*="streamlit"]').forEach(function(a){
-        a.style.display='none';
-        if(a.parentElement) a.parentElement.style.display='none';
-      });
-      // classes do badge (prefixos estáveis)
-      doc.querySelectorAll('[class^="_profileContainer"],[class^="_profileImage"],[class^="_link_"],[class^="_container_"],[class*="viewerBadge"]').forEach(function(el){
-        el.style.display='none';
-      });
-    }catch(e){}
-  }
-  function varrer(){
-    var raiz = window.parent && window.parent.document ? window.parent.document : document;
-    limpar(raiz);
-    // vasculha também dentro de iframes do app
-    try{
-      raiz.querySelectorAll('iframe').forEach(function(f){
-        try{ limpar(f.contentDocument); }catch(e){}
-      });
-    }catch(e){}
-  }
-  varrer();
-  // o Streamlit recria elementos ao interagir, então repetimos por um tempo
-  var n=0, t=setInterval(function(){ varrer(); if(++n>40) clearInterval(t); }, 500);
-  // e sempre que o DOM mudar
-  try{
-    var raiz = window.parent && window.parent.document ? window.parent.document : document;
-    new MutationObserver(varrer).observe(raiz.body, {childList:true, subtree:true});
-  }catch(e){}
-})();
-</script>
-""", height=0)
 
 # ── Constantes ─────────────────────────────────────────────────────────────────
 CIDADES = {
@@ -1219,9 +1172,59 @@ with tab_prev:
     st.markdown(f'<div class="titulo-secao">Próximos {dias_previsao} dias · {cidade}</div>',
                 unsafe_allow_html=True)
     if modo_manual:
-        st.info("A previsão vem da API online do Open-Meteo. No modo de atualização manual (CSV) ela "
-                "fica indisponível — troque a fonte para Open-Meteo na barra lateral para usá-la.")
+        st.info("No modo manual não há previsão futura (ela vem da API online). Mas dá para calcular "
+                "o Delta T dos dias que você inseriu — veja abaixo.")
         previsao = None
+
+        # ── Delta T calculado dos dados manuais (diário) ────────────────────────
+        st.markdown('<div class="titulo-secao" style="margin-top:8px;">Delta T dos dias inseridos '
+                    '(condição de pulverização)</div>', unsafe_allow_html=True)
+        tem_temp = "temp_media" in dados.columns and dados["temp_media"].notna().any()
+        tem_umidade = "umidade" in dados.columns and dados["umidade"].notna().any()
+
+        if not (tem_temp and tem_umidade):
+            st.warning("Para o Delta T é preciso ter temperatura e umidade na planilha. "
+                       "Preencha a coluna de umidade (%) e as temperaturas para ver este cálculo.")
+        else:
+            dados_dt = dados.dropna(subset=["temp_media", "umidade"]).copy()
+            dados_dt["bulbo_umido"] = temperatura_bulbo_umido(
+                dados_dt["temp_media"].values, dados_dt["umidade"].values)
+            dados_dt["delta_t"] = dados_dt["temp_media"] - dados_dt["bulbo_umido"]
+
+            pct_ideal_m = float(dados_dt["delta_t"].between(*DELTA_T_IDEAL).mean() * 100)
+            dias_ideais = int(dados_dt["delta_t"].between(*DELTA_T_IDEAL).sum())
+            dt_medio = float(dados_dt["delta_t"].mean())
+            classe_media = classificar_delta_t(dt_medio)
+            indicadores_dt_m = [
+                ("Delta T médio", f"{dt_medio:.1f}", "°C · média do período", classe_media[1]),
+                ("Condição média", classe_media[0], "faixa predominante", classe_media[1]),
+                ("Dias ideais", f"{dias_ideais}", f"de {len(dados_dt)} dias (2–8 °C)", "#2dd4a7"),
+                ("Faixa ideal", "2–8", "°C (padrão BOM/GRDC)", "#00e5ff"),
+            ]
+            for coluna, (rot, val, uni, cor) in zip(st.columns(4), indicadores_dt_m):
+                cartao_indicador(coluna, rot, val, uni, cor)
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            grafico_dt_m = go.Figure()
+            grafico_dt_m.add_hrect(y0=2, y1=8, fillcolor="rgba(45,212,167,0.10)", line_width=0,
+                annotation_text="ideal 2–8", annotation_font_color="#2dd4a7",
+                annotation_font_size=10, annotation_position="top left")
+            grafico_dt_m.add_hrect(y0=0, y1=2, fillcolor="rgba(251,146,60,0.08)", line_width=0)
+            grafico_dt_m.add_hrect(y0=8, y1=10, fillcolor="rgba(251,146,60,0.08)", line_width=0)
+            cores_barra = [classificar_delta_t(v)[1] for v in dados_dt["delta_t"]]
+            grafico_dt_m.add_trace(go.Bar(x=dados_dt.index, y=dados_dt["delta_t"], name="Delta T",
+                marker_color=cores_barra, marker_line_width=0))
+            grafico_dt_m.update_layout(**LAYOUT_BASE, height=320, legend=_LEGEND,
+                title=_TITLE("Delta T médio por dia (verde = ideal, laranja = marginal, vermelho = inadequado)"),
+                yaxis={**_YAXIS, "title": "Delta T (°C)"})
+            st.plotly_chart(grafico_dt_m, width="stretch")
+
+            st.markdown('<div class="nota" style="margin-top:8px;">Delta T = temperatura do ar − '
+                        'temperatura de bulbo úmido (fórmula de Stull, 2011), calculado a partir da '
+                        'temperatura média e da umidade que você inseriu. Como o dado é diário, este é '
+                        'um Delta T <b>médio do dia</b> — indica se o dia esteve, no geral, favorável à '
+                        'pulverização, não a hora exata. Para a janela hora a hora, use a fonte '
+                        'Open-Meteo (API).</div>', unsafe_allow_html=True)
     else:
         try:
             previsao = buscar_previsao(lat, lon, dias_previsao)
