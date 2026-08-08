@@ -832,6 +832,16 @@ def detectar_estacao(precip_mes, limiar):
     return {"inicio": si + 1, "fim": info_enos + 1, "duracao": duracao, "regime": "sazonal"}
 
 
+def num(valor, casas=1):
+    """Formata um número com segurança; devolve '—' se for vazio/NaN/inválido."""
+    try:
+        if valor is None or pd.isna(valor):
+            return "—"
+        return f"{float(valor):.{casas}f}"
+    except (ValueError, TypeError):
+        return "—"
+
+
 def cartao_indicador(coluna, label, valor, unidade, cor):
     coluna.markdown(f"""
     <div class="indicador" style="border-top-color:{cor};">
@@ -1033,6 +1043,20 @@ else:
 
 dados_agregados = agregar(dados, agregacao)
 
+# Blindagem: garante que as colunas numéricas sejam número de verdade (evita erro
+# de formatação quando vem texto/vazio de um CSV mal preenchido) e remove dias
+# sem as três medidas essenciais.
+for _coluna_num in ("temp_maxima", "temp_minima", "temp_media", "chuva", "vento", "umidade", "et0"):
+    if _coluna_num in dados.columns:
+        dados[_coluna_num] = pd.to_numeric(dados[_coluna_num], errors="coerce")
+dados = dados.dropna(subset=["temp_maxima", "temp_minima", "chuva"], how="any")
+if dados.empty:
+    st.error("Os dados carregados não têm valores numéricos válidos de temperatura e chuva. "
+             "Se estiver no modo manual, confira se preencheu os números corretamente (use ponto "
+             "ou vírgula decimal) e se não deixou essas colunas vazias.")
+    st.stop()
+dados_agregados = agregar(dados, agregacao)
+
 tab_hist, tab_prev, tab_cal, tab_lua, tab_agro = st.tabs([
     "HISTÓRICO", "PREVISÃO", "CALENDÁRIO AGRÍCOLA", "CALENDÁRIO LUNAR", "PAINEL AGRONÔMICO"
 ])
@@ -1041,12 +1065,12 @@ tab_hist, tab_prev, tab_cal, tab_lua, tab_agro = st.tabs([
 with tab_hist:
     st.markdown('<div class="titulo-secao">Resumo do período</div>', unsafe_allow_html=True)
     indicadores = [
-        ("Temp. média",   f"{dados['temp_media'].mean():.1f}", "°C",   CORES["temp_media"]),
-        ("Máx. absoluta", f"{dados['temp_maxima'].max():.1f}",  "°C",   CORES["temp_maxima"]),
-        ("Mín. absoluta", f"{dados['temp_minima'].min():.1f}",  "°C",   CORES["temp_minima"]),
-        ("Precip. total", f"{dados['chuva'].sum():.0f}", "mm", CORES["chuva"]),
-        ("Umidade média", f"{dados['umidade'].mean():.0f}", "%",    CORES["umidade"]),
-        ("Vento máx.",    f"{dados['vento'].max():.0f}",      "km/h", CORES["vento"]),
+        ("Temp. média",   num(dados['temp_media'].mean(), 1), "°C",   CORES["temp_media"]),
+        ("Máx. absoluta", num(dados['temp_maxima'].max(), 1),  "°C",   CORES["temp_maxima"]),
+        ("Mín. absoluta", num(dados['temp_minima'].min(), 1),  "°C",   CORES["temp_minima"]),
+        ("Precip. total", num(dados['chuva'].sum(), 0), "mm", CORES["chuva"]),
+        ("Umidade média", num(dados['umidade'].mean(), 0), "%",    CORES["umidade"]),
+        ("Vento máx.",    num(dados['vento'].max(), 0),      "km/h", CORES["vento"]),
     ]
     for coluna, (lb, vl, un, cor) in zip(st.columns(6), indicadores):
         cartao_indicador(coluna, lb, vl, un, cor)
